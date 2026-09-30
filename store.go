@@ -11,9 +11,11 @@ import (
 
 // StoredRelease preserves one complete, successful migration transaction.
 type StoredRelease struct {
-	Original Document `json:"original"`
-	Document Document `json:"document"`
-	Path     []Record `json:"path"`
+	Original     Document `json:"original"`
+	Document     Document `json:"document"`
+	Path         []Record `json:"path"`
+	PathVersions []string `json:"path_versions,omitempty"`
+	Result       Result   `json:"result"`
 }
 
 type storedState struct {
@@ -58,12 +60,21 @@ func (s *JSONStore) Publish() func(context.Context, Release) error {
 // Commit writes the next state to a temporary file and renames it over the current state.
 // It is safe to call directly, but failed migrations should never call it.
 func (s *JSONStore) Commit(release Release) error {
+	pathVersions := make([]string, 0, len(release.Path)+1)
+	if len(release.Path) > 0 {
+		pathVersions = append(pathVersions, release.Path[0].FromVersion)
+		for _, record := range release.Path {
+			pathVersions = append(pathVersions, record.ToVersion)
+		}
+	}
 	state := storedState{
 		Document: release.Document,
 		History: []StoredRelease{{
-			Original: release.Original,
-			Document: release.Document,
-			Path:     release.Path,
+			Original:     release.Original,
+			Document:     release.Document,
+			Path:         release.Path,
+			PathVersions: pathVersions,
+			Result:       release.Result,
 		}},
 	}
 	if _, history, err := s.Load(); err == nil {

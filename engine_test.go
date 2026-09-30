@@ -23,45 +23,53 @@ func newTestEngine(t *testing.T) *Engine {
 		From:        "v1",
 		To:          "v2",
 		Description: "add default timeout",
-		Migrate: func(_ context.Context, doc Document) (Document, error) {
+		MigrateDoc: func(_ context.Context, doc Document) (StepResult, error) {
 			next := doc.Clone()
 			next["version"] = "v2"
 			if _, ok := next["timeout_seconds"]; !ok {
 				next["timeout_seconds"] = 30
 			}
-			return next, nil
+			return StepResult{Document: next, Changes: []FieldChange{{Field: "timeout_seconds", Action: ActionAdd, After: 30, Sources: []FieldSource{{Kind: SourceDefault, Value: 30}}}}}, nil
 		},
 	})
 	engine.MustRegister(Step{
 		From:        "v2",
 		To:          "v3",
 		Description: "split endpoint",
-		Migrate: func(_ context.Context, doc Document) (Document, error) {
+		MigrateDoc: func(_ context.Context, doc Document) (StepResult, error) {
 			endpoint, ok := doc["endpoint"].(string)
 			if !ok {
-				return nil, errors.New("endpoint is required")
+				return StepResult{}, errors.New("endpoint is required")
 			}
 			if _, conflict := doc["host"]; conflict {
-				return nil, errors.New("host already exists and conflicts with endpoint split")
+				return StepResult{}, errors.New("host already exists and conflicts with endpoint split")
 			}
 			next := doc.Clone()
 			next["version"] = "v3"
 			next["host"] = endpoint
 			next["port"] = 443
 			delete(next, "endpoint")
-			return next, nil
+			return StepResult{Document: next, Changes: []FieldChange{
+				{Field: "host", Action: ActionAdd, After: endpoint, Sources: []FieldSource{{Kind: SourceSplit, Field: "endpoint", Value: endpoint, Rule: "endpoint hostname"}}},
+				{Field: "port", Action: ActionAdd, After: 443, Sources: []FieldSource{{Kind: SourceDefault, Value: 443}}},
+				{Field: "endpoint", Action: ActionRemove, Before: endpoint, Sources: []FieldSource{{Kind: SourceSplit, Field: "endpoint", Value: endpoint, Rule: "endpoint hostname"}}},
+			}}, nil
 		},
-		Reverse: func(_ context.Context, doc Document) (Document, error) {
+		ReverseDoc: func(_ context.Context, doc Document) (StepResult, error) {
 			host, ok := doc["host"].(string)
 			if !ok {
-				return nil, errors.New("host is required")
+				return StepResult{}, errors.New("host is required")
 			}
 			next := doc.Clone()
 			next["version"] = "v2"
 			next["endpoint"] = host
 			delete(next, "host")
 			delete(next, "port")
-			return next, nil
+			return StepResult{Document: next, Changes: []FieldChange{
+				{Field: "endpoint", Action: ActionAdd, After: host, Sources: []FieldSource{{Kind: SourceOldValue, Field: "host", Value: host}}},
+				{Field: "host", Action: ActionRemove, Before: host, Sources: []FieldSource{{Kind: SourceOldValue, Field: "host", Value: host}}},
+				{Field: "port", Action: ActionRemove, Before: doc["port"], Loss: true, Description: "combined endpoint cannot retain an explicit port"},
+			}}, nil
 		},
 	})
 	engine.MustRegister(Step{
@@ -209,6 +217,117 @@ func TestReverse(t *testing.T) {
 	}
 }
 
+func findChange(t *testing.T, changes []FieldChange, field string) FieldChange {
+	t.Helper()
+	for _, change := range changes {
+		if change.Field == field {
+			return change
+		}
+	}
+	t.Fatalf("change for %q was not reported in %#v", field, changes)
+	return FieldChange{}
+}
+
+func TestPreviewExplainsSourcesAndDoesNotClaimLosslessSplit(t *testing.T) {
+	engine := newTestEngine(t)
+	doc := mustDoc("v1", map[string]any{"endpoint": "api.example.com"})
+
+	preview, err := engine.Preview(context.Background(), doc, "v3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Result.Lossy {
+		t.Fatal("documented split removal should not be treated as unexplained information loss")
+	}
+	host := findChange(t, preview.Result.Changes, "host")
+	if host.Action != ActionAdd || host.Sources[0].Kind != SourceSplit || host.Sources[0].Field != "endpoint" {
+		t.Fatalf("host provenance was not reported: %#v", host)
+	}
+	timeout := findChange(t, preview.Result.Changes, "timeout_seconds")
+	if timeout.Sources[0].Kind != SourceDefault {
+		t.Fatalf("timeout provenance was not reported as default: %#v", timeout)
+	}
+
+	reverse, err := engine.PreviewReverse(context.Background(), preview.Result.Document, "v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := findChange(t, reverse.Result.Changes, "port")
+	if !port.Loss {
+		t.Fatalf("reverse port removal must be marked as lossy: %#v", port)
+	}
+	if !reverse.Result.Lossy {
+		t.Fatal("reverse preview must not advertise a lossless restore")
+	}
+
+	changedReverseInput := preview.Result.Document.Clone()
+	changedReverseInput["host"] = "changed.example.com"
+	if _, err := engine.ApplyReversePreview(context.Background(), changedReverseInput, reverse); !errors.Is(err, ErrPreviewStale) {
+		t.Fatalf("changed rollback input must reject its preview, got %v", err)
+	}
+
+	rollback, err := engine.ApplyReversePreview(context.Background(), preview.Result.Document, reverse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollback.Document["version"] != "v2" || rollback.Document["endpoint"] != "api.example.com" {
+		t.Fatalf("rollback preview was not applied: %#v", rollback.Document)
+	}
+}
+
+func TestApplyPreviewRejectsChangedInputAndUsesSelectedPath(t *testing.T) {
+	engine := newTestEngine(t)
+	original := mustDoc("v2", map[string]any{"endpoint": "api.example.com"})
+	preview, err := engine.Preview(context.Background(), original, "v4", WithPath("v2", "v3", "v4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(preview.Path) != "[v2 v3 v4]" {
+		t.Fatalf("unexpected selected path: %v", preview.Path)
+	}
+
+	changed := original.Clone()
+	changed["endpoint"] = "changed.example.com"
+	published := false
+	_, err = engine.PublishPreview(context.Background(), changed, preview, func(context.Context, Release) error {
+		published = true
+		return nil
+	})
+	if !errors.Is(err, ErrPreviewStale) || published {
+		t.Fatalf("changed input must reject the old preview, err=%v published=%v", err, published)
+	}
+
+	result, err := engine.ApplyPreview(context.Background(), original, preview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Document["version"] != "v4" || result.Document["host"] != "api.example.com" {
+		t.Fatalf("preview was not applied: %#v", result.Document)
+	}
+}
+
+func TestReverseUnsupportedReportsSpecificBlocker(t *testing.T) {
+	engine := newTestEngine(t)
+	doc := mustDoc("v3", map[string]any{"host": "api.example.com", "port": 443})
+
+	_, err := engine.Reverse(context.Background(), doc, "v1")
+	if !errors.Is(err, ErrReverseUnsupported) {
+		t.Fatalf("expected unsupported reverse, got %v", err)
+	}
+	var blockers ReverseBlockers
+	if !errors.As(err, &blockers) || len(blockers) != 1 {
+		t.Fatalf("expected one structured blocker, got %v", err)
+	}
+	if blockers[0].From != "v2" || blockers[0].To != "v1" {
+		t.Fatalf("blocker did not identify the missing edge: %#v", blockers[0])
+	}
+
+	partial, partialErr := engine.Reverse(context.Background(), doc, "v1")
+	if partialErr == nil || partial.Document != nil {
+		t.Fatalf("unsupported rollback must not return a partial document: result=%#v err=%v", partial, partialErr)
+	}
+}
+
 func TestJSONStoreAtomicHistory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "config.json")
 	store := NewJSONStore(path)
@@ -234,6 +353,13 @@ func TestJSONStoreAtomicHistory(t *testing.T) {
 	}
 	if len(history[0].Path) != 2 {
 		t.Fatalf("migration record incomplete: %#v", history[0].Path)
+	}
+	if fmt.Sprint(history[0].PathVersions) != "[v1 v2 v3]" {
+		t.Fatalf("actual path versions were not retained: %v", history[0].PathVersions)
+	}
+	host := findChange(t, history[0].Result.Changes, "host")
+	if host.Sources[0].Kind != SourceSplit {
+		t.Fatalf("published result lost field provenance: %#v", host)
 	}
 
 	failed := mustDoc("v3", map[string]any{"host": "api.example.com", "fail_v4": true})
