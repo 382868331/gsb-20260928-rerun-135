@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -52,6 +53,9 @@ type Step struct {
 	Migrate func(context.Context, Document) (Document, error)
 	// Reverse is optional. When absent, this edge cannot be used for downgrades.
 	Reverse func(context.Context, Document) (Document, error)
+	// Effects optionally declares how the step produces or removes fields so
+	// previews can explain field provenance (default, split rule, ...).
+	Effects []FieldEffect
 }
 
 func (s Step) validate() error {
@@ -90,7 +94,12 @@ type Result struct {
 	Document    Document
 	Records     []Record
 	Migrated    bool
+	// Warnings lists information loss observed during migration, such as
+	// fields that were dropped or replaced and cannot be reconstructed.
+	Warnings []string
 }
+
+var timeNow = time.Now
 
 type migrateOptions struct {
 	explicitPath []string
@@ -144,7 +153,7 @@ func (e *Engine) MustRegister(step Step) {
 
 // Plan resolves and validates the ordered steps before any document is changed or published.
 func (e *Engine) Plan(from, to string, options ...Option) ([]Step, error) {
-	opts := migrateOptions{now: time.Now}
+	opts := migrateOptions{now: timeNow}
 	for _, option := range options {
 		option(&opts)
 	}
@@ -241,13 +250,14 @@ func (e *Engine) Migrate(ctx context.Context, doc Document, target string, optio
 	if err != nil {
 		return Result{}, err
 	}
-	opts := migrateOptions{now: time.Now}
+	opts := migrateOptions{now: timeNow}
 	for _, option := range options {
 		option(&opts)
 	}
 
 	working := doc.Clone()
 	records := make([]Record, 0, len(steps))
+	var warnings []string
 	for _, step := range steps {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -262,6 +272,8 @@ func (e *Engine) Migrate(ctx context.Context, doc Document, target string, optio
 		if version, _ := next["version"].(string); version != step.To {
 			return Result{}, fmt.Errorf("migration %s -> %s failed: resulting version is %q", step.From, step.To, version)
 		}
+		_, losses := stepProvenance(step, working, next)
+		warnings = append(warnings, losses...)
 		working = next
 		records = append(records, Record{
 			Timestamp:   opts.now().UTC(),
@@ -277,6 +289,7 @@ func (e *Engine) Migrate(ctx context.Context, doc Document, target string, optio
 		Document:    working,
 		Records:     records,
 		Migrated:    true,
+		Warnings:    warnings,
 	}, nil
 }
 
@@ -342,7 +355,52 @@ func (e *Engine) Reverse(ctx context.Context, doc Document, target string, optio
 	}
 	result, err := reverseEngine.Migrate(ctx, doc, target, options...)
 	if errors.Is(err, ErrNoMigrationPath) || errors.Is(err, ErrAmbiguousPath) {
-		return Result{}, fmt.Errorf("%w for %s -> %s: %w", ErrReverseUnsupported, from, target, err)
+		blockers := e.RollbackBlockers(from, target)
+		if len(blockers) == 0 {
+			blockers = []string{"no registered reverse path connects the two versions"}
+		}
+		return Result{}, fmt.Errorf("%w for %s -> %s: %s", ErrReverseUnsupported, from, target, strings.Join(blockers, "; "))
 	}
-	return result, err
+	if err != nil {
+		return Result{}, err
+	}
+	// A downgrade is not guaranteed to be lossless: report every field that
+	// existed before the rollback and is gone afterwards instead of pretending
+	// the original configuration was fully restored.
+	for key := range doc {
+		if key == "version" {
+			continue
+		}
+		if _, kept := result.Document[key]; !kept {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("field %q was dropped by the rollback and is not restored", key))
+		}
+	}
+	return result, nil
+}
+
+// RollbackBlockers reports the concrete reasons a downgrade from -> to cannot
+// run: each forward step on the path that does not implement Reverse, or the
+// absence of a forward path at all. It returns nil when a rollback is possible.
+func (e *Engine) RollbackBlockers(from, to string) []string {
+	paths := e.allPaths(to, from, 256)
+	if len(paths) == 0 {
+		return []string{fmt.Sprintf("no migration path %s -> %s exists in either direction", from, to)}
+	}
+	var best []string
+	for _, path := range paths {
+		var blockers []string
+		for i := 0; i < len(path)-1; i++ {
+			step := e.steps[path[i]][path[i+1]]
+			if step.Reverse == nil {
+				blockers = append(blockers, fmt.Sprintf("step %s -> %s (%s) has no reverse migration", step.From, step.To, step.Description))
+			}
+		}
+		if len(blockers) == 0 {
+			return nil
+		}
+		if best == nil || len(blockers) < len(best) {
+			best = blockers
+		}
+	}
+	return best
 }

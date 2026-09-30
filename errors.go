@@ -13,6 +13,8 @@ var (
 	ErrReverseUnsupported = errors.New("reverse migration is not supported")
 	// ErrInvalidStep indicates an invalid migration step registration.
 	ErrInvalidStep = errors.New("invalid migration step")
+	// ErrStalePreview indicates the input changed after a preview was computed.
+	ErrStalePreview = errors.New("preview no longer matches the input")
 	// ErrNotFound indicates that a configuration store does not contain a release yet.
 	ErrNotFound = errors.New("configuration not found")
 )
