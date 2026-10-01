@@ -14,6 +14,11 @@ Go 包 `configmigrator` 用注册式步骤把整份应用配置从一个版本�
 - `Preview` 在迁移前给出影响预览：每个字段标明来源（旧值保留、默认值、拆分规则或未声明的派生），被删除或覆盖的字段作为信息丢失明确列入 `Losses`。
 - 预览携带输入指纹；`Apply` 在校验输入未变化后才执行，预览后配置被修改会返回 `ErrStalePreview`，不会套用旧计划。
 - 正向步骤可选择实现 `Reverse`；无可用反向路径时返回包装了 `ErrReverseUnsupported` 的错误，并用 `RollbackBlockers` 列出具体阻碍（哪个步骤缺少反向实现）。回退不保证无损：无法还原的字段会列入 `Result.Warnings`，不会生成看似已恢复的残缺配置。
+- `PreviewGroup` 一次协调整组彼此引用的配置：`GroupSpec.References` 声明跨文件引用，预览展示引用如何跟随字段拆分、合并或身份变化（`ReferenceFollowed` / `ReferenceUnchanged` / `ReferenceBroken`）。
+- 单份配置可以迁移不代表整组有效：无法对应到任何成员的引用会列入 `GroupPreview.Blockers`，`ApplyGroup` 在阻碍存在时返回 `ErrGroupBlocked`，不会发布半组新配置。
+- 组预览携带整组指纹；确认后任一成员被修改，`ApplyGroup` 返回 `ErrStalePreview`，必须重新核对整组。
+- `GroupStore` 把整组状态、发布历史（含迁移前原件）和已确认预览原子写入单个状态文件：保存或发布中断后重开，只会看到完整旧组或完整新组，历史预览仍可查询当时的依据。
+- `GroupStore.Rollback(releaseID)` 按历史版本回退整组：`GroupRollback.Restored` 列出恢复的成员，`Unrecoverable` 列出快照中没有、仅留存于发布原件中的信息；回退不删除任何历史版本与原文件。
 
 ## 示例
 

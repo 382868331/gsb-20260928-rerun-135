@@ -17,4 +17,8 @@ var (
 	ErrStalePreview = errors.New("preview no longer matches the input")
 	// ErrNotFound indicates that a configuration store does not contain a release yet.
 	ErrNotFound = errors.New("configuration not found")
+	// ErrGroupBlocked indicates that unresolved cross-file references prevent publishing the group.
+	ErrGroupBlocked = errors.New("group migration is blocked")
+	// ErrReleaseNotFound indicates that a historical release identifier is unknown.
+	ErrReleaseNotFound = errors.New("release not found")
 )
