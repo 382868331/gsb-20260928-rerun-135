@@ -15,6 +15,8 @@ var (
 	ErrInvalidStep = errors.New("invalid migration step")
 	// ErrStalePreview indicates the input changed after a preview was computed.
 	ErrStalePreview = errors.New("preview no longer matches the input")
+	// ErrGroupBlocked indicates a group preview listed blockers and cannot be applied.
+	ErrGroupBlocked = errors.New("group migration is blocked")
 	// ErrNotFound indicates that a configuration store does not contain a release yet.
 	ErrNotFound = errors.New("configuration not found")
 )
