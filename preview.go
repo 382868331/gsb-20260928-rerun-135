@@ -23,6 +23,10 @@ type FieldEffect struct {
 	Field  string
 	Source FieldSource
 	Detail string
+	// From lists the pre-step fields this output field is derived from. It lets
+	// merges follow renames, splits, and joins by common origin instead of
+	// matching post-migration names.
+	From []string
 }
 
 type FieldProvenance struct {

@@ -19,4 +19,12 @@ var (
 	ErrGroupBlocked = errors.New("group migration is blocked")
 	// ErrNotFound indicates that a configuration store does not contain a release yet.
 	ErrNotFound = errors.New("configuration not found")
+	// ErrMergeBlocked indicates a merge still has unresolved items or broken references.
+	ErrMergeBlocked = errors.New("configuration merge is blocked")
+	// ErrInvalidMergeDecision indicates a manual resolution was invalid or missing a reason.
+	ErrInvalidMergeDecision = errors.New("invalid merge decision")
+	// ErrMergeItemNotFound indicates the addressed merge item does not exist.
+	ErrMergeItemNotFound = errors.New("merge item not found")
+	// ErrMergeAdopted indicates the merge was already officially adopted.
+	ErrMergeAdopted = errors.New("configuration merge already adopted")
 )
