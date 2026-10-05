@@ -19,4 +19,10 @@ var (
 	ErrGroupBlocked = errors.New("group migration is blocked")
 	// ErrNotFound indicates that a configuration store does not contain a release yet.
 	ErrNotFound = errors.New("configuration not found")
+	// ErrUnknownMergeItem indicates a decision references an item the preview does not contain.
+	ErrUnknownMergeItem = errors.New("unknown merge item")
+	// ErrMergeUnresolved indicates items still lack a reasoned decision.
+	ErrMergeUnresolved = errors.New("merge items are unresolved")
+	// ErrMergeBlocked indicates an association is incomplete or inconsistent, so adoption is refused.
+	ErrMergeBlocked = errors.New("merge adoption is blocked")
 )

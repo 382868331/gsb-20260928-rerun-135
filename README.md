@@ -19,6 +19,10 @@ Go 包 `configmigrator` 用注册式步骤把整份应用配置从一个版本�
 - `RollbackGroup` 整组回退：任一文件缺少反向步骤时整组拒绝并逐文件列出阻碍；回退后引用仍无法对应的列入 `GroupResult.Blockers`，丢失字段列入 `Warnings`。
 - `GroupStore` 按代（generation）原子发布整组：先完整写入新代目录，再以单次 manifest 重命名切换当前代，中断后重开只会看到完整旧组或完整新组；历史代目录与原始文件全部保留。
 - `GroupStore.Rollback` 可把当前代切回任一历史代，报告哪些文件被恢复、哪些后续代仅归档不再当前（其中独有的修改不可恢复）；历史预览连同其指纹依据始终可通过 `Load`/`History` 查询。
+- `CompareCandidates` 通过 `OriginLink` 把同一来源对象在两个团队的候选间按含义关联：改名或拆分后仍按来源对齐比较，逐项区分为 `agreed`/`added`/`removed`/`modified`/`conflict`（同一含义的冲突修改）。
+- `AdoptMerge` 逐项采纳：每个非一致项必须有带理由（`Reason`）的决定，且决定绑定条目指纹；`MergeReference` 声明的关联引用若只解决了一部分或混用了两侧，返回 `ErrMergeBlocked` 阻止正式采用。
+- `RecheckResolutions` 在任一候选再次变化后只重新核对受影响的选择：指纹未变的决定保持有效，变化或消失的条目列入 `Stale`，新增条目列入 `NewItems`。
+- `MergeSession` 以追加式决定日志记录人工决定；`Undo` 只撤销最近决定并保留记录本身，原始来源与两个候选始终原样保存。`MergeStore` 用临时文件加原子重命名保存会话，重开后候选、决定日志与采纳记录完整可见。
 
 ## 示例
 
